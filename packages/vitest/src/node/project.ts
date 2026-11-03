@@ -11,8 +11,8 @@ import crypto from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { deepMerge, nanoid, slash } from '@vitest/utils/helpers'
-import { isAbsolute, join, relative } from 'pathe'
+import { deepMerge, nanoid, toArray } from '@vitest/utils/helpers'
+import { join, relative } from 'pathe'
 import pm from 'picomatch'
 import { createDefinesScript } from '../utils/config-helpers'
 import {
@@ -30,6 +30,7 @@ import { loadGlobalSetupFiles } from './globalSetup'
 import { listenClusterServer } from './plugins/browserLoader'
 import { getFilePoolName } from './pool'
 import {
+  filterTestFiles,
   globProjectFiles,
   globProjectTestFiles,
   isInSourceTestCode,
@@ -142,9 +143,11 @@ export class TestProject {
       return this._provided
     }
     // globalSetup can run even if core workspace is not part of the test run
-    // so we need to inherit its provided context
+    // so we need to inherit its provided context. Browser instances inherit
+    // the context of the project that runs their global setup
+    const parent = this._instanceParent ?? this.vitest.getRootProject()
     return {
-      ...this.vitest.getRootProject().getProvidedContext(),
+      ...parent.getProvidedContext(),
       ...this._provided,
     }
   }
@@ -221,6 +224,13 @@ export class TestProject {
       return
     }
 
+    // the project that declares browser instances runs their inherited global setup once
+    const parent = this._instanceParent
+    await parent?._initializeGlobalSetup()
+    const globalSetup = parent
+      ? toArray(this.config.globalSetup).filter((file) => !parent.config.globalSetup.includes(file))
+      : this.config.globalSetup
+
     const native = this.runner instanceof NativeModuleRunner
     // global setup is imported by this process, so its imports are only known to a resolve hook
     const canRecord =
@@ -229,7 +239,7 @@ export class TestProject {
       !this.config.globalSetup.length ||
       trackNativeImports()
 
-    this._globalSetups = await loadGlobalSetupFiles(this.runner, this.config.globalSetup)
+    this._globalSetups = await loadGlobalSetupFiles(this.runner, globalSetup)
     if (canRecord) {
       this.vitest.cache._dependencies.recordGlobalSetup(
         this,
@@ -307,8 +317,8 @@ export class TestProject {
       this.typecheckFilesList = typecheckTestFiles
 
       return {
-        testFiles: this.filterFiles(testFiles, filters, dir),
-        typecheckTestFiles: this.filterFiles(typecheckTestFiles, filters, dir),
+        testFiles: filterTestFiles(testFiles, filters, dir),
+        typecheckTestFiles: filterTestFiles(typecheckTestFiles, filters, dir),
       }
     })
   }
@@ -394,32 +404,6 @@ export class TestProject {
     return false
   }
 
-  private filterFiles(testFiles: string[], filters: string[], dir: string): string[] {
-    if (filters.length && process.platform === 'win32') {
-      filters = filters.map((f) => slash(f))
-    }
-
-    if (filters.length) {
-      return testFiles.filter((t) => {
-        const testFile = relative(dir, t).toLocaleLowerCase()
-        return filters.some((f) => {
-          // if filter is a full file path, we should include it if it's in the same folder
-          if (isAbsolute(f) && t.startsWith(f)) {
-            return true
-          }
-
-          const relativePath = f.endsWith('/') ? join(relative(dir, f), '/') : relative(dir, f)
-          return (
-            testFile.includes(f.toLocaleLowerCase()) ||
-            testFile.includes(relativePath.toLocaleLowerCase())
-          )
-        })
-      })
-    }
-
-    return testFiles
-  }
-
   /**
    * The parent browser project that owns this cluster's single Vite server.
    * Set on the primary (the hidden parent of a browser cluster) at server
@@ -430,6 +414,11 @@ export class TestProject {
   _parentBrowser?: ParentProjectBrowser
   /** @internal */
   public _parent?: TestProject
+
+  /** @internal */
+  get _instanceParent(): TestProject | undefined {
+    return this._parent?._parentBrowser ? this._parent : undefined
+  }
 
   /**
    * Closes the project and all associated resources. This can only be called once; the closing promise is cached until the server restarts.

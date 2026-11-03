@@ -254,6 +254,14 @@ function resolveLaunchOptions(
     headless: browser.headless,
   }
 
+  if (browserName === 'firefox') {
+    // multiple import maps per document are behind a pref in Firefox 150+
+    launchOptions.firefoxUserPrefs = {
+      'dom.multiple_import_maps.enabled': true,
+      ...launchOptions.firefoxUserPrefs,
+    }
+  }
+
   if (typeof browser.trace === 'object' && browser.trace.tracesDir) {
     launchOptions.tracesDir = browser.trace.tracesDir
   }
@@ -534,8 +542,9 @@ export class PlaywrightBrowserProvider implements BrowserProvider {
       return { url: moduleUrl.href, predicate }
     }
 
+    // the tester unmocks by path, but the route is registered by the full url
     function predicateKey(sessionId: string, url: string) {
-      return `${sessionId}:${url}`
+      return `${sessionId}:${new URL(url, 'http://localhost').href}`
     }
 
     return {

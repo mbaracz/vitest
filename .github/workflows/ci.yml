@@ -39,7 +39,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-and-cache
+      - uses: $/.github/actions/setup-and-cache
+
+      - name: Check duplicate dependencies
+        run: pnpm dedupe --check
 
       - name: Install
         run: pnpm i --filter '!docs'
@@ -50,7 +53,7 @@ jobs:
       - name: Generate CLI docs
         run: pnpm -C docs run cli-table
 
-      # check uncommited LICENSE.md, auto-imports.d.ts, etc...
+      # check uncommitted LICENSE.md, auto-imports.d.ts, etc...
       - name: Check stale build artifacts
         run: git diff --exit-code
 
@@ -150,6 +153,10 @@ jobs:
     name: 'Test: ${{ matrix.suite }}, node-${{ matrix.node_version }}, ${{ matrix.os }}'
     if: needs.changed.outputs.should_skip != 'true'
     runs-on: ${{ matrix.os }}
+    permissions:
+      id-token: write # upload test reports to flakiness.io via OIDC
+    env:
+      VITEST_CI_FLAKINESS: true
 
     timeout-minutes: 30
 
@@ -187,14 +194,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-and-cache
+      - uses: $/.github/actions/setup-and-cache
         with:
           node-version: ${{ matrix.node_version }}
 
       - name: Install
         run: pnpm i --filter '!docs'
 
-      - uses: ./.github/actions/setup-playwright
+      - uses: $/.github/actions/setup-playwright
         with:
           browsers: chromium
 
@@ -217,7 +224,7 @@ jobs:
         env:
           VITEST_CI_BLOB_LABEL: ${{ matrix.os }}-node-${{ matrix.node_version }}
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: vitest-results-${{ matrix.suite }}-${{ matrix.os }}-node-${{ matrix.node_version }}
@@ -230,7 +237,7 @@ jobs:
           include-hidden-files: true
 
       - name: Upload Playwright traces
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && matrix.suite == 'unit' }}
         with:
           name: playwright-traces-${{ matrix.os }}-node-${{ matrix.node_version }}
@@ -250,6 +257,10 @@ jobs:
     if: needs.changed.outputs.should_skip != 'true'
 
     runs-on: windows-latest
+    permissions:
+      id-token: write # upload test reports to flakiness.io via OIDC
+    env:
+      VITEST_CI_FLAKINESS: true
     strategy:
       matrix:
         include:
@@ -268,14 +279,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-and-cache
+      - uses: $/.github/actions/setup-and-cache
         with:
           node-version: 24
 
       - name: Install
         run: pnpm i --filter '!docs'
 
-      - uses: ./.github/actions/setup-playwright
+      - uses: $/.github/actions/setup-playwright
         with:
           browsers: all
 
@@ -296,6 +307,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: read # pull the playwright-deps image from GHCR
+      id-token: write # upload test reports to flakiness.io via OIDC
+    env:
+      VITEST_CI_FLAKINESS: true
     container:
       # the tag is version-keyed, built by playwright-deps-image in this workflow
       image: ${{ needs.playwright-deps-image.outputs.image }} # zizmor: ignore[unpinned-images]
@@ -319,14 +333,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-and-cache
+      - uses: $/.github/actions/setup-and-cache
         with:
           node-version: 24
 
       - name: Install
         run: pnpm i --filter '!docs'
 
-      - uses: ./.github/actions/setup-playwright
+      - uses: $/.github/actions/setup-playwright
         with:
           browsers: all
 
@@ -347,6 +361,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: read # pull the playwright-deps image from GHCR
+      id-token: write # upload test reports to flakiness.io via OIDC
+    env:
+      VITEST_CI_FLAKINESS: true
+      # the Install step adds a local commit; report the checked-out one
+      FLAKINESS_COMMIT_ID: ${{ github.sha }}
+      FK_ENV_VITE: '7'
     container:
       # the tag is version-keyed, built by playwright-deps-image in this workflow
       image: ${{ needs.playwright-deps-image.outputs.image }} # zizmor: ignore[unpinned-images]
@@ -370,7 +390,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-and-cache
+      - uses: $/.github/actions/setup-and-cache
         with:
           node-version: 24
 
@@ -382,7 +402,7 @@ jobs:
           # ubuntu runners have no default git identity; set one for this commit
           git add . && git -c user.email=ci@vitest.dev -c user.name=vitest-ci commit -m "ci" && pnpm i --prefer-offline --no-frozen-lockfile --filter '!docs'
 
-      - uses: ./.github/actions/setup-playwright
+      - uses: $/.github/actions/setup-playwright
         with:
           browsers: all
 
@@ -403,7 +423,7 @@ jobs:
     needs:
       - test
       - changed
-    if: needs.changed.outputs.should_skip != 'true' && !cancelled()
+    if: github.event.action != 'closed' && needs.changed.outputs.should_skip != 'true' && !cancelled()
     runs-on: ubuntu-latest
     name: Merge Reports
     timeout-minutes: 10
@@ -412,7 +432,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-and-cache
+      - uses: $/.github/actions/setup-and-cache
 
       - name: Install
         run: pnpm i --filter '!docs'
@@ -420,7 +440,7 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: vitest-results-*
           merge-multiple: true
@@ -440,7 +460,7 @@ jobs:
       - name: Upload Test UI Report
         if: ${{ !cancelled() }}
         id: upload-ui-report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: ./packages/ui/.vitest/test-ui.html
           archive: false
@@ -449,7 +469,7 @@ jobs:
       - name: Upload Test Unit Report
         if: ${{ !cancelled() }}
         id: upload-unit-report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: ./test/unit/.vitest/test-unit.html
           archive: false
@@ -458,7 +478,7 @@ jobs:
       - name: Upload Test E2E Report
         if: ${{ !cancelled() }}
         id: upload-e2e-report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: ./test/e2e/.vitest/test-e2e.html
           archive: false

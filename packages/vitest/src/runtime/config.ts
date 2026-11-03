@@ -1,7 +1,7 @@
-import type { Config as FakeTimersConfig } from '@sinonjs/fake-timers'
 import type { PrettyFormatOptions } from '@vitest/pretty-format'
 import type { SnapshotEnvironment, SnapshotUpdateState } from '@vitest/snapshot'
 import type { DiffOptions, SerializedDiffOptions } from '@vitest/utils/diff'
+import type { FakeTimersConfig } from '../integrations/mock/timers'
 import type { LabelColor } from '../types/general'
 import type {
   SequenceHooks,
@@ -132,10 +132,13 @@ export interface SerializedConfig {
     trace: BrowserTraceViewMode
     traceView: {
       enabled: boolean
+      mode: BrowserTraceViewRecordingMode
       recordCanvas: boolean
       inlineImages: boolean
+      ariaSnapshot: boolean
     }
     trackUnhandledErrors: boolean
+    importMapMocks: boolean | undefined
     detailsPanelPosition: 'right' | 'bottom'
   }
   standalone: boolean
@@ -164,6 +167,7 @@ export interface SerializedConfig {
     viteModuleRunner: boolean
     nodeLoader: boolean
     recordDependencies: boolean
+    traceTimeline: boolean
     openTelemetry:
       | {
           enabled: boolean
@@ -212,6 +216,7 @@ export type RuntimeConfig = Pick<
 }
 
 export type RuntimeOptions = Partial<RuntimeConfig>
+export type BrowserTraceViewRecordingMode = 'off' | 'on' | 'failure-only'
 export type BrowserTraceViewMode =
   | 'on'
   | 'off'

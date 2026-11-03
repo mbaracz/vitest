@@ -16,7 +16,7 @@ import { BrowserConnectionError } from '../errors'
 
 const debug = createDebugger('vitest:browser:pool')
 
-const PROVIDER_CLOSE_TIMEOUT = 10_000
+const PROVIDER_CLOSE_TIMEOUT = 30_000
 
 export interface BrowserPool {
   runTests: (
@@ -32,7 +32,8 @@ interface BrowserTask {
   files: FileSpecification[]
   method: 'run' | 'collect'
   // providers without a per-session mocker share a single mock registry
-  // and some of them cannot drive several pages, so the instance runs alone
+  // unless mocks are forced through the import map, and some of them cannot
+  // drive several pages, so the instance runs alone
   exclusive: boolean
   result: DeferPromise<void>
 }
@@ -234,7 +235,9 @@ export function createBrowserPool(vitest: Vitest): BrowserPool {
             project,
             files,
             method,
-            exclusive: !provider.mocker || !provider.supportsParallelism,
+            exclusive:
+              !provider.supportsParallelism ||
+              (!provider.mocker && project.config.browser.importMapMocks !== true),
             result: createDefer<void>(),
           }
         },
@@ -285,7 +288,9 @@ export function createBrowserPool(vitest: Vitest): BrowserPool {
     await Promise.all([...stopping, ...exitPromises])
     // pages can be opened outside of the pool (`vitest.standalone`)
     await Promise.all(vitest.projects.map((project) => closeProvider(project)))
-    vitest._browserSessions.sessionIds.clear()
+    vitest._browserSessions.sessionIds.forEach((sessionId) => {
+      vitest._browserSessions.close(sessionId)
+    })
     vitest.projects.forEach((project) => {
       project.browser?.state.orchestrators.forEach((orchestrator) => {
         orchestrator.$close()
@@ -306,12 +311,14 @@ async function groupSpecifications(
   const docblocks = await Promise.all(specs.map((spec) => getSpecificationDocblock(spec, code)))
 
   specs.forEach((spec, index) => {
-    const { project, moduleId, testLines, testIds, testNamePattern, testTagsFilter } = spec
+    const { project, moduleId, testLines, testIds, testNames, testNamePattern, testTagsFilter } =
+      spec
     const files = groupedFiles.get(project) || []
     files.push({
       filepath: moduleId,
       testLocations: testLines,
       testIds,
+      testNames,
       testNamePattern,
       testTagsFilter,
       fileTags: docblocks[index].tags,
@@ -570,8 +577,7 @@ class BrowserWorker {
     this.busySessions.clear()
     this.readySessions.clear()
     await closeProvider(this.project, options)
-    // the pages are closed now, so a late reconnect is not reported as an unknown session
-    sessionIds.forEach((sessionId) => sessions.sessionIds.delete(sessionId))
+    sessionIds.forEach((sessionId) => sessions.close(sessionId))
     orchestrators.forEach((orchestrator) => orchestrator?.$close())
   }
 

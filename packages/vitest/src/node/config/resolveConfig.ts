@@ -4,6 +4,7 @@ import type {
   Plugin as VitePlugin,
   UserConfig as ViteUserConfig,
 } from 'vite'
+import type { CliOptions } from '../cli/cli-api'
 import type { Logger } from '../logger'
 import type {
   ApiConfig,
@@ -34,8 +35,10 @@ import { resolveProjectEntries } from '../projects/resolveProjects'
 import { withLabel } from '../reporters/renderers/utils'
 import { BaseSequencer } from '../sequencers/BaseSequencer'
 import { RandomSequencer } from '../sequencers/RandomSequencer'
-import { API_TOKEN_FILE, resolveApiToken } from './apiToken'
+import { resolveApiToken } from './apiToken'
 import { PluginHarness } from './pluginHarness'
+
+const builtinVCSProviders = new Set(['git', 'mtime'])
 
 function resolvePath(path: string, root: string) {
   // local-pkg (mlly)'s resolveModule("./file", { paths: ["/some/root"] }) tries
@@ -117,7 +120,7 @@ export function resolveApiServerConfig(
   }
 
   if (api) {
-    if (!api.port && !api.middlewareMode) {
+    if (api.port == null && !api.middlewareMode) {
       api.port = defaultPort
     }
   } else {
@@ -129,7 +132,7 @@ export function resolveApiServerConfig(
     api.middlewareMode = false
     // The browser server is standalone, so it always needs a port even when the
     // user didn't configure `api`/`ui` (in which case `api` defaulted above)
-    if (!api.port) {
+    if (api.port == null) {
       api.port = defaultPort
     }
   }
@@ -228,6 +231,7 @@ export function resolveTestConfig(
     resolved.coverage = globalConfig.coverage
     resolved.attachmentsDir = globalConfig.attachmentsDir
     resolved.mergeReportsLabel = globalConfig.mergeReportsLabel
+    resolved.watch = globalConfig.watch
   }
 
   const rootStats = statSync(resolved.root, { throwIfNoEntry: false })
@@ -510,6 +514,18 @@ export function resolveTestConfig(
         resolved.coverage.reporter.push(['text-summary', {}])
       }
     }
+  }
+  // CLI options are merged into the test config
+  if ((options as CliOptions).sinceLastRun) {
+    if (resolved.cache === false) {
+      throw new Error(
+        'The "--since-last-run" flag requires the "cache" option to store the dependencies of the test files.',
+      )
+    }
+    resolved.changed ||= true
+    resolved.experimental ??= {} as any
+    resolved.experimental.recordDependencies = true
+    resolved.experimental.vcsProvider = 'mtime'
   }
   if (resolved.coverage.changed === undefined && resolved.changed !== undefined) {
     resolved.coverage.changed = resolved.changed
@@ -852,7 +868,11 @@ export function resolveTestConfig(
   resolved.typecheck ??= {} as any
   resolved.typecheck.enabled ??= false
 
-  if (resolved.typecheck.enabled && !warnedTypeCheck) {
+  if (
+    resolved.typecheck.enabled &&
+    !warnedTypeCheck &&
+    !process.env.VITEST_DISABLE_EXPERIMENTAL_LOG
+  ) {
     warnedTypeCheck = true
     logger.console.warn(
       c.yellow(
@@ -938,19 +958,31 @@ export function resolveTestConfig(
   }
 
   const traceView = resolved.browser.traceView
-  resolved.browser.traceView =
-    typeof traceView === 'object'
-      ? {
-          enabled: traceView.enabled ?? false,
-          recordCanvas: traceView.recordCanvas ?? false,
-          inlineImages: traceView.inlineImages ?? false,
-        }
-      : {
-          enabled: traceView ?? false,
-          recordCanvas: false,
-          inlineImages: false,
-        }
-  if (resolved.browser.enabled && resolved.browser.traceView.enabled) {
+  const traceViewOptions = typeof traceView === 'object' ? traceView : undefined
+  if (traceViewOptions?.enabled != null) {
+    logger.deprecate(
+      '`browser.traceView.enabled` is deprecated. Use `browser.traceView.mode` instead.',
+    )
+  }
+  const traceViewMode =
+    typeof traceView === 'string'
+      ? traceView
+      : typeof traceView === 'object'
+        ? (traceView.mode ??
+          (traceView.enabled === undefined ? 'failure-only' : traceView.enabled ? 'on' : 'off'))
+        : traceView === undefined
+          ? 'failure-only'
+          : traceView
+            ? 'on'
+            : 'off'
+  resolved.browser.traceView = {
+    enabled: traceViewMode !== 'off',
+    mode: traceViewMode,
+    recordCanvas: traceViewOptions?.recordCanvas ?? false,
+    inlineImages: traceViewOptions?.inlineImages ?? false,
+    ariaSnapshot: traceViewOptions?.ariaSnapshot ?? true,
+  }
+  if (resolved.browser.enabled && resolved.browser.traceView.mode === 'on') {
     resolved.browser.detailsPanelPosition = 'bottom'
   }
   if (resolved.browser.trace.tracesDir != null) {
@@ -967,12 +999,6 @@ export function resolveTestConfig(
 
   if (htmlReporter) {
     resolved.includeTaskLocation ??= true
-  } else if (resolved.browser.enabled && resolved.browser.traceView.enabled && !resolved.watch) {
-    logger.console.warn(
-      c.yellow(
-        withLabel('yellow', 'Vitest', '--browser.traceView is enabled without the HTML reporter.'),
-      ),
-    )
   }
 
   resolved.server ??= {}
@@ -1039,7 +1065,7 @@ export function resolveTestConfig(
 
   if (
     typeof resolved.experimental.vcsProvider === 'string' &&
-    resolved.experimental.vcsProvider !== 'git'
+    !builtinVCSProviders.has(resolved.experimental.vcsProvider)
   ) {
     resolved.experimental.vcsProvider = resolvePath(
       resolved.experimental.vcsProvider,
@@ -1127,6 +1153,7 @@ export async function resolveConfig(
   options: UserConfig = {},
   viteOverrides: ViteUserConfig = {},
   pluginsHarness: PluginHarness = new PluginHarness(),
+  cliFilters: string[] = [],
 ): Promise<ResolvedViteConfig> {
   // We clone CLI Options and Vite overrides to reuse when a watch mode is triggered.
   const cliOptionsCopy = deepMerge({}, options) as UserConfig
@@ -1169,7 +1196,6 @@ export async function resolveConfig(
   rootViteConfig.server.fs.allow.push(
     ...resolveFsAllow(rootViteConfig.root, rootViteConfig.configFile),
   )
-  rootViteConfig.server.fs.deny.push(API_TOKEN_FILE)
 
   // the server has been created, we don't need to override vite.server options
   const { token, tokenCreated } = resolveApiToken(rootViteConfig.root)
@@ -1204,6 +1230,7 @@ export async function resolveConfig(
   rootConfig.cliOptions = cliOptionsCopy
   rootConfig.viteOverrides = viteOverridesCopy
   rootConfig._browserContribution = captures.browserContribution
+  rootConfig._cliFilters = cliFilters
   // projects never inherit `tagsFilter` and `browser` from the programmatic
   // config (see `inheritRootViteOverrides`), so remove them from the base too
   if (captures.rawTestConfig) {

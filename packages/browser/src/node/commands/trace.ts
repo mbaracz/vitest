@@ -1,6 +1,6 @@
+import type { BrowserTraceData, BrowserTraceEntry } from '@vitest/utils/trace'
 import type { BrowserCommand } from 'vitest/node'
 import type { SerializedLocator } from '..'
-import type { BrowserTraceData, BrowserTraceEntry } from '../../client/tester/trace'
 
 interface MarkTracePayload {
   name: string
@@ -66,7 +66,7 @@ export const _recordBrowserTrace: BrowserCommand<
     if (!entry.stack || entry.location) {
       return entry
     }
-    const stacks = project.browser!.parseStacktrace(entry.stack)
+    const stacks = project.browser!.parseStacktrace(entry.stack, { firstOnly: true })
     if (stacks[0]) {
       entry.location = stacks[0]
     }

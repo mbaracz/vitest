@@ -30,7 +30,7 @@ export const separator: string = c.dim(' > ')
 
 const labelDefaultColors = [c.bgYellow, c.bgCyan, c.bgGreen, c.bgMagenta] as const
 
-function getCols(delta = 0) {
+export function getCols(delta = 0): number {
   let length = process.stdout?.columns
   if (!length || Number.isNaN(length)) {
     length = 30
@@ -242,7 +242,11 @@ export function padSummaryTitle(str: string): string {
 }
 
 export function truncateString(text: string, maxLength: number): string {
-  return utilsTruncateString(stripVTControlCharacters(text), maxLength)
+  const plainText = stripVTControlCharacters(text)
+  if (plainText.length <= maxLength) {
+    return text
+  }
+  return utilsTruncateString(plainText, maxLength)
 }
 
 function capitalize<T extends string>(text: T) {

@@ -70,6 +70,11 @@ export interface VitestOptions {
   stdin?: NodeJS.ReadStream
   stdout?: NodeJS.WriteStream | Writable
   stderr?: NodeJS.WriteStream | Writable
+  /**
+   * File filters of the run, so setup can skip work for projects they exclude.
+   * @internal
+   */
+  cliFilters?: string[]
 }
 
 export class Vitest {
@@ -149,7 +154,8 @@ export class Vitest {
 
   /** @internal */ configOverride: Partial<ResolvedConfig> = {}
   /** @internal */ filenamePattern?: string[]
-  /** @internal */ _sourceFilterResult?: { affected: number; total: number }
+  /** @internal */ _sourceFilterResult?: { affected: number; total: number; failed: number }
+  /** @internal */ _failedFilterResult?: { selected: number; total: number }
   /** @internal */ runningPromise?: Promise<TestRunResult>
   /** @internal */ closingPromise?: Promise<void>
   /** @internal */ cancelPromise?: Promise<void | void[]>
@@ -222,6 +228,11 @@ export class Vitest {
   _setRootConfig(config: ResolvedViteConfig): void {
     this.watcher.unregisterWatcher()
     clearTimeout(this._rerunTimer)
+    // the rerun timer is the only place that clears these sets. If a restart
+    // cancels the timer, `handleFileChanged` ignores every later change of the
+    // files that are still in the sets.
+    this.watcher.changedTests.clear()
+    this.watcher.invalidates.clear()
     this.restartsCount += 1
     this.pool?.close?.()
     this.pool = undefined
@@ -298,6 +309,7 @@ export class Vitest {
       this.config.cliOptions,
       this.config.viteOverrides,
       this._harness,
+      this.config._cliFilters,
     )
     this._harness.setVitest(this)
     await this._start(config)
@@ -719,7 +731,7 @@ export class Vitest {
       }
 
       await this._testRun.start(specifications)
-      await this.coverageProvider?.onTestRunStart?.()
+      await this.coverageProvider?.onTestRunStart?.(specifications)
 
       for (const file of files) {
         await this._reportFileTask(file)
@@ -886,11 +898,11 @@ export class Vitest {
           })
         }
 
-        // if run with --changed, don't exit if no tests are found
+        // if run with --changed or --last-failed, don't exit if no tests are found
         if (!specifications.length) {
           await this._traces.$('vitest.test_run', async () => {
             await this._testRun.start([])
-            await this.coverageProvider?.onTestRunStart?.()
+            await this.coverageProvider?.onTestRunStart?.([])
             const coverage = await this.coverageProvider?.generateCoverage?.({ allTestsRun: true })
 
             await this._testRun.end([], [], coverage)
@@ -898,7 +910,9 @@ export class Vitest {
             await this.reportCoverage(coverage, true)
           })
 
-          if (!this.config.watch || !(this.config.changed || this.config.related?.length)) {
+          const narrowed =
+            this.config.changed || this.config.related?.length || this.config.cliOptions.lastFailed
+          if (!this.config.watch || !narrowed) {
             throw new FilesNotFoundError()
           }
         }
@@ -1035,7 +1049,7 @@ export class Vitest {
   private async runFiles(specs: TestSpecification[], allTestsRun: boolean): Promise<TestRunResult> {
     return this._traces.$('vitest.test_run', async () => {
       await this._testRun.start(specs)
-      await this.coverageProvider?.onTestRunStart?.()
+      await this.coverageProvider?.onTestRunStart?.(specs)
 
       // previous run
       await this.cancelPromise
@@ -1091,6 +1105,7 @@ export class Vitest {
         this.config.changed = false
         this.config.related = undefined
         this._sourceFilterResult = undefined
+        this._failedFilterResult = undefined
       })
 
       return await this.runningPromise
@@ -1200,6 +1215,7 @@ export class Vitest {
         config.testNamePattern,
         specification.testLines,
         specification.testIds,
+        specification.testNames,
         tagsFilter,
         globalHasOnly,
         false,
@@ -1229,6 +1245,7 @@ export class Vitest {
       config.testNamePattern,
       specification.testLines,
       specification.testIds,
+      specification.testNames,
       tagsFilter,
       hasOnly,
       false,
@@ -1291,6 +1308,7 @@ export class Vitest {
       this.config.changed = false
       this.config.related = undefined
       this._sourceFilterResult = undefined
+      this._failedFilterResult = undefined
     })
 
     return await this.runningPromise
@@ -1639,13 +1657,20 @@ export class Vitest {
         clearTimeout(this._rerunTimer)
         await this.runningPromise?.catch(noop)
 
-        const teardownProjects = [...this.projects]
-        if (this.coreWorkspaceProject && !teardownProjects.includes(this.coreWorkspaceProject)) {
-          teardownProjects.push(this.coreWorkspaceProject)
+        const teardownProjects = new Set<TestProject>()
+        for (const project of this.projects) {
+          // the project that declares browser instances runs their global setup
+          if (project._instanceParent) {
+            teardownProjects.add(project._instanceParent)
+          }
+          teardownProjects.add(project)
+        }
+        if (this.coreWorkspaceProject) {
+          teardownProjects.add(this.coreWorkspaceProject)
         }
         const teardownErrors: unknown[] = []
         // do teardown before closing the server
-        for (const project of teardownProjects.reverse()) {
+        for (const project of [...teardownProjects].reverse()) {
           await project._teardownGlobalSetup().catch((error) => {
             teardownErrors.push(error)
           })

@@ -137,7 +137,7 @@ function parseLocation(context: BrowserCommandContext, stack?: string): ParsedSt
   if (!stack) {
     return
   }
-  const parsedStacks = context.project.browser!.parseStacktrace(stack)
+  const parsedStacks = context.project.browser!.parseStacktrace(stack, { firstOnly: true })
   return parsedStacks[0]
 }
 
